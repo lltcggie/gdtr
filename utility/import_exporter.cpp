@@ -2,7 +2,6 @@
 #include "import_exporter.h"
 
 #include "bytecode/bytecode_base.h"
-#include "compat/oggstr_loader_compat.h"
 #include "compat/resource_loader_compat.h"
 #include "core/error/error_list.h"
 #include "core/error/error_macros.h"
@@ -431,6 +430,10 @@ Error ImportExporter::export_imports(const String &p_out_dir, const Vector<Strin
 	const Vector<String> files_to_export = partial_export ? _files_to_export : get_settings()->get_file_list();
 	Ref<EditorProgressGDDC> pr = memnew(EditorProgressGDDC("export_imports", "Exporting resources...", export_files_count, true));
 
+	if (GDRESettings::get_singleton()->is_extract_translation_mode()) {
+		opt_write_md5_files = false;
+	}
+
 	// *** Detect steam
 	if (get_settings()->is_project_config_loaded()) {
 		String custom_settings = get_settings()->get_project_setting("_custom_features");
@@ -449,13 +452,6 @@ Error ImportExporter::export_imports(const String &p_out_dir, const Vector<Strin
 	}
 
 	Ref<DirAccess> dir = DirAccess::open(output_dir);
-	Vector<String> addon_first_level_dirs = Glob::glob("res://addons/*", true);
-	if (addon_first_level_dirs.size() > 0) {
-		if (partial_export) {
-			addon_first_level_dirs = Glob::dirs_in_names(files_to_export, addon_first_level_dirs);
-		}
-		recreate_plugin_configs(addon_first_level_dirs);
-	}
 
 	if (pr->step("Exporting resources...", 0, true)) {
 		return ERR_SKIP;
@@ -850,15 +846,18 @@ Error ImportExporter::export_imports(const String &p_out_dir, const Vector<Strin
 		}
 	}
 
-	if (get_settings()->is_project_config_loaded()) { // some pcks do not have project configs
-		if (get_settings()->save_project_config(output_dir) != OK) {
-			print_line("ERROR: Failed to save project config!");
-		} else {
-			print_line("Saved project config.");
-			// Remove binary project config, as editors will load from it instead of the text one
-			dir->remove(get_settings()->get_project_config_path().get_file());
+	if (!GDRESettings::get_singleton()->is_extract_translation_mode()) {
+		if (get_settings()->is_project_config_loaded()) { // some pcks do not have project configs
+			if (get_settings()->save_project_config(output_dir) != OK) {
+				print_line("ERROR: Failed to save project config!");
+			} else {
+				print_line("Saved project config.");
+				// Remove binary project config, as editors will load from it instead of the text one
+				dir->remove(get_settings()->get_project_config_path().get_file());
+			}
 		}
 	}
+
 	pr = nullptr;
 	report->print_report();
 	ResourceCompatLoader::set_default_gltf_load(false);
@@ -867,105 +866,17 @@ Error ImportExporter::export_imports(const String &p_out_dir, const Vector<Strin
 	if (gdre::dir_is_empty(output_dir.path_join(".tmp"))) {
 		dir->remove(output_dir.path_join(".tmp"));
 	}
-	// 4.1 and higher have a filesystem cache
-	if (get_ver_major() >= 4 && !(get_ver_minor() < 1 && get_ver_major() == 4)) {
-		Vector<Ref<ExportReport>> reports;
-		for (auto &token : tokens) {
-			if (token.report->modified_time > 0) {
-				reports.push_back(token.report);
+	if (!GDRESettings::get_singleton()->is_extract_translation_mode()) {
+		// 4.1 and higher have a filesystem cache
+		if (get_ver_major() >= 4 && !(get_ver_minor() < 1 && get_ver_major() == 4)) {
+			Vector<Ref<ExportReport>> reports;
+			for (auto &token : tokens) {
+				if (token.report->modified_time > 0) {
+					reports.push_back(token.report);
+				}
 			}
-		}
-		reports.sort_custom<ReportComparator>();
-		save_filesystem_cache(reports, output_dir, partial_export);
-	}
-	return OK;
-}
-
-Error ImportExporter::recreate_plugin_config(const String &plugin_dir) {
-	Error err;
-	if (GDRESettings::get_singleton()->get_bytecode_revision() == 0) {
-		return ERR_UNCONFIGURED;
-	}
-	static const Vector<String> wildcards = { "*.gdc", "*.gde", "*.gd" };
-	String rel_plugin_path = String("addons").path_join(plugin_dir);
-	auto gd_scripts = gdre::get_recursive_dir_list(String("res://").path_join(rel_plugin_path), wildcards, false);
-	String main_script;
-
-	if (gd_scripts.is_empty()) {
-		return OK;
-	}
-
-	bool tool_scripts_found = false;
-	bool cant_decompile = false;
-
-	for (int j = 0; j < gd_scripts.size(); j++) {
-		auto ext = gd_scripts[j].get_extension().to_lower();
-		if ((ext == "gde" || ext == "gdc") && GDRESettings::get_singleton()->get_bytecode_revision() == 0) {
-			cant_decompile = true;
-			continue;
-		}
-		String gd_script_abs_path = String("res://").path_join(rel_plugin_path).path_join(gd_scripts[j]);
-		Ref<FakeGDScript> gd_script = ResourceCompatLoader::non_global_load(gd_script_abs_path, "", &err);
-		if (gd_script.is_valid()) {
-			if (gd_script->get_instance_base_type() == "EditorPlugin") {
-				main_script = gd_scripts[j].get_basename() + ".gd";
-				break;
-			}
-			if (gd_script->is_tool()) {
-				tool_scripts_found = true;
-			}
-		}
-	}
-	if (main_script == "") {
-		// No tool scripts found, this is not a plugin
-		if (!tool_scripts_found && !cant_decompile) {
-			return OK;
-		}
-		return ERR_UNAVAILABLE;
-	}
-	String plugin_cfg_text = String("[plugin]\n\n") +
-			"name=\"" + plugin_dir.replace("_", " ").replace(".", " ") + "\"\n" +
-			"description=\"" + plugin_dir.replace("_", " ").replace(".", " ") + " plugin\"\n" +
-			"author=\"Unknown\"\n" +
-			"version=\"1.0\"\n" +
-			"script=\"" + main_script + "\"";
-	String output_plugin_path = output_dir.path_join(rel_plugin_path);
-	gdre::ensure_dir(output_plugin_path);
-	Ref<FileAccess> f = FileAccess::open(output_plugin_path.path_join("plugin.cfg"), FileAccess::WRITE, &err);
-	ERR_FAIL_COND_V_MSG(err || f.is_null(), ERR_FILE_CANT_WRITE, "can't open plugin.cfg for writing");
-	ERR_FAIL_COND_V_MSG(!f->store_string(plugin_cfg_text), ERR_FILE_CANT_WRITE, "can't write plugin.cfg");
-	print_verbose("Recreated plugin config for " + plugin_dir);
-	return OK;
-}
-
-// Recreates the "plugin.cfg" files for each plugin to avoid loading errors.
-Error ImportExporter::recreate_plugin_configs(const Vector<String> &plugin_dirs) {
-	Error err;
-	if (!DirAccess::exists("res://addons")) {
-		return OK;
-	}
-	print_line("Recreating plugin configs...");
-	Vector<String> dirs;
-	if (plugin_dirs.is_empty()) {
-		dirs = Glob::glob("res://addons/*", true);
-	} else {
-		dirs = plugin_dirs;
-		for (int i = 0; i < dirs.size(); i++) {
-			if (!dirs[i].is_absolute_path()) {
-				dirs.write[i] = String("res://addons/").path_join(dirs[i]);
-			}
-		}
-	}
-	for (int i = 0; i < dirs.size(); i++) {
-		String path = dirs[i];
-		if (!DirAccess::dir_exists_absolute(path)) {
-			continue;
-		}
-		String dir = dirs[i].get_file();
-		err = recreate_plugin_config(dir);
-		if (err) {
-			WARN_PRINT("Failed to recreate plugin.cfg for " + dir);
-			report->failed_plugin_cfg_create.push_back(dir);
+			reports.sort_custom<ReportComparator>();
+			save_filesystem_cache(reports, output_dir, partial_export);
 		}
 	}
 	return OK;

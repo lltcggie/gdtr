@@ -412,7 +412,7 @@ bool GDREPackedSource::try_open_pack(const String &p_path, bool p_replace_files,
 		String path;
 		path.append_utf8(cs.ptr());
 		String p_file = path.get_file();
-		ERR_FAIL_COND_V_MSG(p_file.begins_with("gdre_") && p_file != "gdre_export.log", false, "Don't try to extract the GDRE pack files, just download the source from github.");
+		ERR_FAIL_COND_V_MSG(p_file.begins_with("gdre_") && p_file != "gdtr_export.log", false, "Don't try to extract the GDRE pack files, just download the source from github.");
 
 		// TODO: Ask bruvzg about whether or not p_offset is needed here.
 		uint64_t ofs = file_base + f->get_64() + (version >= PACK_FORMAT_VERSION_V3 ? 0 : p_offset);

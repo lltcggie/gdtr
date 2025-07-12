@@ -1504,7 +1504,7 @@ Ref<GodotVer> GDScriptDecomp::get_max_godot_ver() const {
 //	Error get_script_strings(Vector<String> &r_strings, bool include_identifiers = false);
 //	Error get_script_strings(const Vector<uint8_t> &p_buffer, Vector<String> &r_strings, bool include_identifiers = false);
 
-Error GDScriptDecomp::get_script_strings(const String &p_path, const String &engine_version, Vector<String> &r_strings, bool p_include_identifiers) {
+Error GDScriptDecomp::get_script_strings(const String &p_path, const String &engine_version, Vector<String> &r_strings, Vector<String> &r_identifiers) {
 	Vector<uint8_t> p_buffer;
 	Error err = OK;
 	auto decomp = GDScriptDecomp::create_decomp_for_version(engine_version, true);
@@ -1523,20 +1523,18 @@ Error GDScriptDecomp::get_script_strings(const String &p_path, const String &eng
 		p_buffer = FileAccess::get_file_as_bytes(p_path, &err);
 		ERR_FAIL_COND_V_MSG(err != OK, err, "Error reading file: " + p_path);
 	}
-	return decomp->get_script_strings_from_buf(p_buffer, r_strings, p_include_identifiers);
+	return decomp->get_script_strings_from_buf(p_buffer, r_strings, r_identifiers);
 }
 
-Error GDScriptDecomp::get_script_strings_from_buf(const Vector<uint8_t> &p_buffer, Vector<String> &r_strings, bool p_include_identifiers) {
+Error GDScriptDecomp::get_script_strings_from_buf(const Vector<uint8_t> &p_buffer, Vector<String> &r_strings, Vector<String> &r_identifiers) {
 	ScriptState script_state;
 	Error err = get_script_state(p_buffer, script_state);
 	ERR_FAIL_COND_V_MSG(err != OK, err, "Error parsing bytecode");
 	for (int i = 0; i < script_state.constants.size(); i++) {
-		gdre::get_strings_from_variant(script_state.constants[i], r_strings, get_engine_version());
+		gdre::get_strings_from_variant(script_state.constants[i], r_strings, r_identifiers, get_engine_version());
 	}
-	if (p_include_identifiers) {
-		for (int i = 0; i < script_state.identifiers.size(); i++) {
-			r_strings.push_back(script_state.identifiers[i]);
-		}
+	for (int i = 0; i < script_state.identifiers.size(); i++) {
+		r_identifiers.push_back(script_state.identifiers[i]);
 	}
 	return OK;
 }

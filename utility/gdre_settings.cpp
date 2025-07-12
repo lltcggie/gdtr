@@ -16,7 +16,6 @@
 #include "utility/gdre_packed_source.h"
 #include "utility/gdre_version.gen.h"
 #include "utility/import_info.h"
-#include "utility/plugin_manager.h"
 #include "utility/task_manager.h"
 
 #include "core/config/project_settings.h"
@@ -242,11 +241,23 @@ GDRESettings::GDRESettings() {
 	logger = memnew(GDRELogger);
 	headless = !RenderingServer::get_singleton() || RenderingServer::get_singleton()->get_video_adapter_name().is_empty();
 	add_logger();
-	PluginManager::load_cache();
+
+	Vector<uint8_t> key;
+	key.resize(32);
+	bool is_all_zero = true;
+	for (int i = 0; i < key.size(); i++) {
+		key.write[i] = script_encryption_key[i];
+		if(script_encryption_key[i] != 0) {
+			is_all_zero = false;
+		}
+	}
+	if (!is_all_zero) {
+		enc_key = key;
+		enc_key_str = String::hex_encode_buffer(key.ptr(), 32);
+	}
 }
 
 GDRESettings::~GDRESettings() {
-	PluginManager::save_cache();
 	remove_current_pack();
 	memdelete(gdre_packeddata_singleton);
 	singleton = nullptr;
@@ -891,6 +902,14 @@ Error GDRESettings::save_project_config(const String &p_out_dir = "") {
 	return current_project->pcfg->save_cfb(output_dir, get_ver_major(), get_ver_minor());
 }
 
+Error GDRESettings::save_project_config_binary(const String &p_out_dir = "") {
+	String output_dir = p_out_dir;
+	if (output_dir.is_empty()) {
+		output_dir = project_path;
+	}
+	return current_project->pcfg->save_cfb_binary(output_dir, get_ver_major(), get_ver_minor());
+}
+
 Error GDRESettings::unload_project() {
 	if (!is_pack_loaded()) {
 		return ERR_DOES_NOT_EXIST;
@@ -1236,6 +1255,14 @@ String GDRESettings::get_remapped_source_path(const String &p_dst) const {
 	return "";
 }
 
+void GDRESettings::set_extract_translation_mode(bool b_extract_translation_mode) {
+	extract_translation_mode = b_extract_translation_mode;
+}
+
+bool GDRESettings::is_extract_translation_mode() const {
+	return extract_translation_mode;
+}
+
 String GDRESettings::get_mapped_path(const String &p_src) const {
 	String src = p_src;
 	if (src.begins_with("uid://")) {
@@ -1411,6 +1438,12 @@ Variant GDRESettings::get_project_setting(const String &p_setting) {
 	return current_project->pcfg->get_setting(p_setting, Variant());
 }
 
+void GDRESettings::set_project_setting(const String &p_setting, Variant value) {
+	ERR_FAIL_COND_EDMSG(!is_pack_loaded(), "Pack not loaded!");
+	ERR_FAIL_COND_EDMSG(!is_project_config_loaded(), "project config not loaded!");
+	current_project->pcfg->set_setting(p_setting, value);
+}
+
 String GDRESettings::get_project_config_path() {
 	ERR_FAIL_COND_V_MSG(!is_project_config_loaded(), String(), "project config not loaded!");
 	return current_project->pcfg->get_cfg_path();
@@ -1490,12 +1523,12 @@ String GDRESettings::get_sys_info_string() const {
 }
 
 void GDRESettings::log_sysinfo() {
-	print_line("GDRE Tools " + String(GDRE_VERSION));
+	print_line("GDTR Tools " + String(GDRE_VERSION));
 	print_line(get_sys_info_string());
 }
 
 Error GDRESettings::open_log_file(const String &output_dir) {
-	String logfile = output_dir.path_join("gdre_export.log");
+	String logfile = output_dir.path_join("gdtr_export.log");
 	bool was_buffering = logger->is_prebuffering_enabled();
 	Error err = logger->open_file(logfile);
 	if (!was_buffering) {
@@ -1829,6 +1862,22 @@ bool GDRESettings::pack_has_project_config() {
 	return false;
 }
 
+void GDRESettings::set_translation_hint_file_path(const String &p_path) {
+	translation_hint_file_path = p_path;
+}
+
+String GDRESettings::get_translation_hint_file_path() const {
+	return translation_hint_file_path;
+}
+
+void GDRESettings::add_old_translation_csv_path(const String &p_path) {
+	old_translation_csv_paths.append(p_path);
+}
+
+Vector<String> GDRESettings::get_old_translation_csv_paths() const {
+	return old_translation_csv_paths;
+}
+
 String GDRESettings::get_gdre_version() const {
 	return GDRE_VERSION;
 }
@@ -1862,7 +1911,7 @@ void GDRESettings::_do_string_load(uint32_t i, StringLoadToken *tokens) {
 	String src_ext = tokens[i].path.get_extension().to_lower();
 	// check if script
 	if (src_ext == "gd" || src_ext == "gdc" || src_ext == "gde") {
-		tokens[i].err = GDScriptDecomp::get_script_strings(tokens[i].path, tokens[i].engine_version, tokens[i].strings);
+		tokens[i].err = GDScriptDecomp::get_script_strings(tokens[i].path, tokens[i].engine_version, tokens[i].strings, tokens[i].identifiers);
 		return;
 	} else if (src_ext == "csv" || src_ext == "json") {
 		Ref<FileAccess> f = FileAccess::open(tokens[i].path, FileAccess::READ, &tokens[i].err);
@@ -1915,7 +1964,7 @@ void GDRESettings::_do_string_load(uint32_t i, StringLoadToken *tokens) {
 				return;
 			}
 			Variant var = JSON::parse_string(jstring);
-			gdre::get_strings_from_variant(var, tokens[i].strings, tokens[i].engine_version);
+			gdre::get_strings_from_variant(var, tokens[i].strings, tokens[i].identifiers, tokens[i].engine_version);
 		}
 		return;
 	}
@@ -1923,7 +1972,7 @@ void GDRESettings::_do_string_load(uint32_t i, StringLoadToken *tokens) {
 	if (res.is_null()) {
 		WARN_PRINT("Failed to load resource " + tokens[i].path);
 	}
-	gdre::get_strings_from_variant(res, tokens[i].strings, tokens[i].engine_version);
+	gdre::get_strings_from_variant(res, tokens[i].strings, tokens[i].identifiers, tokens[i].engine_version);
 }
 
 String GDRESettings::get_string_load_token_description(uint32_t i, StringLoadToken *p_userdata) {
@@ -1934,6 +1983,7 @@ void GDRESettings::load_all_resource_strings() {
 	if (!is_pack_loaded()) {
 		return;
 	}
+	current_project->string_load_tokens.clear();
 	current_project->resource_strings.clear();
 	List<String> extensions;
 	ResourceCompatLoader::get_base_extensions(&extensions, get_ver_major());
@@ -1952,31 +2002,30 @@ void GDRESettings::load_all_resource_strings() {
 	wildcards.push_back("*.json");
 
 	Vector<String> r_files = get_file_list(wildcards);
-	Vector<StringLoadToken> tokens;
-	tokens.resize(r_files.size());
+	current_project->string_load_tokens.resize(r_files.size());
 	String engine_ver = get_version_string();
 	for (int i = 0; i < r_files.size(); i++) {
-		tokens.write[i].path = r_files[i];
-		tokens.write[i].engine_version = engine_ver;
+		current_project->string_load_tokens.write[i].path = r_files[i];
+		current_project->string_load_tokens.write[i].engine_version = engine_ver;
 	}
 	print_line("Loading resource strings, this may take a while!!");
 	Error err = TaskManager::get_singleton()->run_multithreaded_group_task(
 			this,
 			&GDRESettings::_do_string_load,
-			tokens.ptrw(),
-			tokens.size(),
+			current_project->string_load_tokens.ptrw(),
+			current_project->string_load_tokens.size(),
 			&GDRESettings::get_string_load_token_description,
 			"GDRESettings::load_all_resource_strings", RTR("Loading resource strings..."));
 	if (err != OK) {
 		WARN_PRINT("Failed to load resource strings!");
 	}
 	print_line("Resource strings loaded!");
-	for (int i = 0; i < tokens.size(); i++) {
-		if (tokens[i].err != OK) {
-			print_verbose("Failed to load resource strings for " + tokens[i].path);
+	for (int i = 0; i < current_project->string_load_tokens.size(); i++) {
+		if (current_project->string_load_tokens[i].err != OK) {
+			print_verbose("Failed to load resource strings for " + current_project->string_load_tokens[i].path);
 			continue;
 		}
-		for (auto &str : tokens[i].strings) {
+		for (auto &str : current_project->string_load_tokens[i].strings) {
 			current_project->resource_strings.insert(str);
 		}
 	}
@@ -1986,8 +2035,27 @@ void GDRESettings::get_resource_strings(HashSet<String> &r_strings) const {
 	r_strings = current_project->resource_strings;
 }
 
-void GDRESettings::prepop_plugin_cache(const Vector<String> &plugins) {
-	PluginManager::prepop_cache(plugins, !GDREConfig::get_singleton()->get_setting("force_single_threaded", false));
+const Vector<GDRESettings::StringLoadToken> &GDRESettings::get_string_load_tokens() const {
+	return current_project->string_load_tokens;
+}
+
+Vector<uint8_t> GDRESettings::dummy_get_encryption_key() {
+	return Vector<uint8_t>();
+}
+
+String GDRESettings::dummy_get_encryption_key_string() {
+	return String();
+}
+
+Error GDRESettings::dummy_set_encryption_key(Vector<uint8_t> key) {
+	return OK;
+}
+
+Error GDRESettings::dummy_set_encryption_key_string(const String &key) {
+	return OK;
+}
+
+void GDRESettings::dummy_reset_encryption_key() {
 }
 
 Vector<String> GDRESettings::get_errors() {
@@ -1999,13 +2067,13 @@ void GDRESettings::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("unload_project"), &GDRESettings::unload_project);
 	ClassDB::bind_method(D_METHOD("get_gdre_resource_path"), &GDRESettings::get_gdre_resource_path);
 	ClassDB::bind_method(D_METHOD("get_gdre_user_path"), &GDRESettings::get_gdre_user_path);
-	ClassDB::bind_method(D_METHOD("get_encryption_key"), &GDRESettings::get_encryption_key);
-	ClassDB::bind_method(D_METHOD("get_encryption_key_string"), &GDRESettings::get_encryption_key_string);
+	ClassDB::bind_method(D_METHOD("get_encryption_key"), &GDRESettings::dummy_get_encryption_key);
+	ClassDB::bind_method(D_METHOD("get_encryption_key_string"), &GDRESettings::dummy_get_encryption_key_string);
 	ClassDB::bind_method(D_METHOD("is_pack_loaded"), &GDRESettings::is_pack_loaded);
 	ClassDB::bind_method(D_METHOD("_set_error_encryption", "is_encryption_error"), &GDRESettings::_set_error_encryption);
-	ClassDB::bind_method(D_METHOD("set_encryption_key_string", "key"), &GDRESettings::set_encryption_key_string);
-	ClassDB::bind_method(D_METHOD("set_encryption_key", "key"), &GDRESettings::set_encryption_key);
-	ClassDB::bind_method(D_METHOD("reset_encryption_key"), &GDRESettings::reset_encryption_key);
+	ClassDB::bind_method(D_METHOD("set_encryption_key_string", "key"), &GDRESettings::dummy_set_encryption_key_string);
+	ClassDB::bind_method(D_METHOD("set_encryption_key", "key"), &GDRESettings::dummy_set_encryption_key);
+	ClassDB::bind_method(D_METHOD("reset_encryption_key"), &GDRESettings::dummy_reset_encryption_key);
 	ClassDB::bind_method(D_METHOD("get_file_list", "filters"), &GDRESettings::get_file_list, DEFVAL(Vector<String>()));
 	ClassDB::bind_method(D_METHOD("get_file_info_array", "filters"), &GDRESettings::get_file_info_array, DEFVAL(Vector<String>()));
 	ClassDB::bind_method(D_METHOD("get_pack_type"), &GDRESettings::get_pack_type);
@@ -2029,6 +2097,7 @@ void GDRESettings::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("has_remap", "src", "dst"), &GDRESettings::has_remap);
 	ClassDB::bind_method(D_METHOD("add_remap", "src", "dst"), &GDRESettings::add_remap);
 	ClassDB::bind_method(D_METHOD("remove_remap", "src", "dst", "output_dir"), &GDRESettings::remove_remap);
+	ClassDB::bind_method(D_METHOD("set_project_setting", "p_setting", "value"), &GDRESettings::set_project_setting);
 	ClassDB::bind_method(D_METHOD("get_project_setting", "p_setting"), &GDRESettings::get_project_setting);
 	ClassDB::bind_method(D_METHOD("has_project_setting", "p_setting"), &GDRESettings::has_project_setting);
 	ClassDB::bind_method(D_METHOD("get_project_config_path"), &GDRESettings::get_project_config_path);
@@ -2046,13 +2115,19 @@ void GDRESettings::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_sys_info_string"), &GDRESettings::get_sys_info_string);
 	ClassDB::bind_method(D_METHOD("load_project_config"), &GDRESettings::load_project_config);
 	ClassDB::bind_method(D_METHOD("save_project_config", "p_out_dir"), &GDRESettings::save_project_config);
+	ClassDB::bind_method(D_METHOD("save_project_config_binary", "p_out_dir"), &GDRESettings::save_project_config_binary);
 	ClassDB::bind_method(D_METHOD("pack_has_project_config"), &GDRESettings::pack_has_project_config);
+	ClassDB::bind_method(D_METHOD("set_translation_hint_file_path", "p_path"), &GDRESettings::set_translation_hint_file_path);
+	ClassDB::bind_method(D_METHOD("get_translation_hint_file_path"), &GDRESettings::get_translation_hint_file_path);
+	ClassDB::bind_method(D_METHOD("add_old_translation_csv_path", "p_path"), &GDRESettings::add_old_translation_csv_path);
+	ClassDB::bind_method(D_METHOD("get_old_translation_csv_paths"), &GDRESettings::get_old_translation_csv_paths);
 	ClassDB::bind_method(D_METHOD("get_gdre_version"), &GDRESettings::get_gdre_version);
 	ClassDB::bind_method(D_METHOD("get_disclaimer_text"), &GDRESettings::get_disclaimer_text);
-	ClassDB::bind_method(D_METHOD("prepop_plugin_cache", "plugins"), &GDRESettings::prepop_plugin_cache);
 	ClassDB::bind_method(D_METHOD("get_home_dir"), &GDRESettings::get_home_dir);
 	ClassDB::bind_method(D_METHOD("get_errors"), &GDRESettings::get_errors);
 	ClassDB::bind_method(D_METHOD("get_auto_display_scale"), &GDRESettings::get_auto_display_scale);
+	ClassDB::bind_method(D_METHOD("set_extract_translation_mode", "b_extract_translation_mode"), &GDRESettings::set_extract_translation_mode);
+	ClassDB::bind_method(D_METHOD("is_extract_translation_mode"), &GDRESettings::is_extract_translation_mode);
 	ADD_SIGNAL(MethodInfo("write_log_message", PropertyInfo(Variant::STRING, "message")));
 }
 

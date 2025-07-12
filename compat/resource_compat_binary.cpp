@@ -43,7 +43,6 @@
 #include "core/io/resource_format_binary.h"
 
 #include "compat/fake_scene_state.h"
-#include "compat/image_parser_v2.h"
 #include "utility/gdre_settings.h"
 #include "utility/resource_info.h"
 
@@ -371,18 +370,6 @@ Error ResourceLoaderCompatBinary::parse_variant(Variant &r_v) {
 			r_v = StringName(get_unicode_string());
 		} break;
 
-		// Old Godot 2.x Image variant, convert into an object
-		case VARIANT_IMAGE: {
-			//Have to decode the old Image variant here
-			Error err = ImageParserV2::decode_image_v2(f, r_v, true);
-			if (err != OK) {
-				if (err == ERR_UNAVAILABLE) {
-					return err;
-				}
-				ERR_FAIL_V_MSG(ERR_FILE_CORRUPT, "Couldn't load resource: embedded image");
-				//WARN_PRINT(String("Couldn't load resource: embedded image").utf8().get_data());
-			}
-		} break;
 		case VARIANT_NODE_PATH: {
 			Vector<StringName> names;
 			Vector<StringName> subnames;
@@ -2062,12 +2049,7 @@ void ResourceFormatSaverCompatBinaryInstance::write_variant(Ref<FileAccess> f, c
 			// This will only be triggered on godot 2.x, where the image variant is loaded as an image object vs. a resource
 			if (ver_format <= 1) {
 				Ref<Resource> resp = p_property;
-				if (resp->is_class("Image")) {
-					f->store_32(VARIANT_IMAGE);
-					// storing lossless compressed by default
-					ImageParserV2::write_image_v2_to_bin(f, p_property, true);
-					break;
-				} else if (resp->is_class("InputEvent")) {
+				if (resp->is_class("InputEvent")) {
 					// these should never be saved to binary; just store the type
 					f->store_32(VARIANT_INPUT_EVENT);
 					break;

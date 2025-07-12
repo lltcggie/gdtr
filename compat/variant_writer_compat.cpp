@@ -4,7 +4,6 @@
 #include "compat/resource_loader_compat.h"
 #include "core/object/script_language.h"
 
-#include "image_parser_v2.h"
 #include "input_event_parser_v2.h"
 #include "utility/common.h"
 
@@ -685,9 +684,7 @@ Error VariantParserCompat::parse_tag_assign_eof(VariantParser::Stream *p_stream,
 				if (token.type == TK_IDENTIFIER) {
 					String id = token.value;
 					// Old V2 Image
-					if (id == "Image") {
-						err = ImageParserV2::parse_image_construct_v2(p_stream, r_value, true, line, r_err_str);
-					} else if (id == "InputEvent") { // Old V2 InputEvent
+					if (id == "InputEvent") { // Old V2 InputEvent
 						err = InputEventParserV2::parse_input_event_construct_v2(p_stream, r_value, line, r_err_str);
 					} else if (id == "mbutton" || id == "key" || id == "jbutton" || id == "jaxis") { // Old V2 InputEvent in project.cfg
 						err = InputEventParserV2::parse_input_event_construct_v2(p_stream, r_value, line, r_err_str, id);
@@ -1540,9 +1537,7 @@ Error VarWriter<ver_major, is_pcfg, is_script, p_compat, after_4_3>::write_compa
 				// is resource
 				String res_text;
 				// Hack for V2 Images
-				if (ver_major == 2 && res->is_class("Image")) {
-					res_text = ImageParserV2::image_v2_to_string(res, is_pcfg);
-				} else if (ver_major == 2 && res->is_class("InputEvent")) {
+				if (ver_major == 2 && res->is_class("InputEvent")) {
 					res_text = InputEventParserV2::v4_input_event_to_v2_string(res, is_pcfg);
 				} else if (p_encode_res_func) {
 					// try external function
